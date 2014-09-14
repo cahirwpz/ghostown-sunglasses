@@ -55,4 +55,4 @@ class LZO(object):
     if err != 0:
       raise LZOError(err)
 
-    return out
+    return out.raw

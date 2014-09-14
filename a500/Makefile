@@ -1,38 +1,12 @@
 CPPFLAGS = -Isys
 
-BINS	= copper lines parseiff play8svx showilbm sprites4 sprites16 topaz8 \
-          playahx playp61 cube kbtest shapes chunky-16c chunky-rgb mouse \
-          uvmap metaballs blurred circles floor parselwo showlwo neons \
-          plotter highway
+BINS = sunglasses
 
-all:	startup.o libs $(BINS)
+all: libs $(BINS)
 
-blurred:        blurred.o startup.o libsys.a
-chunky-16c:     chunky-16c.o startup.o libsys.a
-chunky-rgb:     chunky-rgb.o startup.o libsys.a
-circles:        circles.o startup.o libsys.a
-neons:          neons.o startup.o libsys.a
-copper:         copper.o startup.o libsys.a
-cube:           cube.o startup.o libsys.a
-floor:          floor.o startup.o libsys.a
-highway:        highway.o startup.o libsys.a
-lines:          lines.o startup.o libsys.a
-metaballs:      metaballs.o startup.o libsys.a
-mouse:          mouse.o startup.o libsys.a
-kbtest:         kbtest.o startup.o libsys.a
-parseiff:       parseiff.o libsys.a
-parselwo:       parselwo.o libsys.a
-play8svx:       play8svx.o libsys.a
-playahx:        playahx.o startup.o libsys.a libahx.a
-playp61:        playp61.o startup.o libsys.a libp61.a
-plotter:        plotter.o startup.o libsys.a
-shapes:         shapes.o startup.o libsys.a
-showilbm:       showilbm.o startup.o libsys.a
-showlwo:        showlwo.o startup.o libsys.a
-sprites4:       sprites4.o startup.o libsys.a
-sprites16:      sprites16.o startup.o libsys.a
-topaz8:         topaz8.o startup.o libsys.a
-uvmap:          uvmap.o uvmap-smc.o startup.o libsys.a
+sunglasses:     blurred.o neons.o floor.o highway.o metaballs.o plotter.o \
+                intro.o punk.o shapes.o theme.o uvmap.o uvmap-smc.o \
+                theme-neons.o farted.o endscroll.o startup.o libp61.a libsys.a
 
 SUBDIRS = ahx p61 sys
 
@@ -44,13 +18,19 @@ clean-libs:
 
 clean::	clean-libs
 	rm -vf sintab.s
-	rm -f $(BINS) *.7z
+	rm -f $(BINS) *.zip
 
 archive:
-	7z a "a500-$$(date +%F-%H%M).7z" $(BINS) data
+	7z a "a500-$$(date +%F-%H%M).zip" $(BINS) data/*.{ilbm,2d,tga,bin,p61,smp,sync,txt}
+
+floppy:
+	-rm -rf floppy
+	mkdir -p floppy/data
+	cp -a $(BINS) floppy/
+	cp -a data/*.{ilbm,2d,tga,bin,p61,smp,sync,txt} floppy/data/
 
 include Makefile.common
 
-.PHONY:	libs clean-libs
+.PHONY:	floppy libs clean-libs
 
 # vim: ts=8 sw=8 expandtab

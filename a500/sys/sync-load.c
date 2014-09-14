@@ -82,7 +82,8 @@ static __regargs TrackT *ReadTrack(char **strptr) {
             Print("Module position is an invalid number!\n");
             goto quit;
           }
-          if (last_pos >= pos) {
+          pos &= 0xff3f;
+          if (last_pos > pos) {
             Print("Frame number does not grow monotonically : %lx -> %lx!\n",
                 (LONG)last_pos, (LONG)pos);
             goto quit;

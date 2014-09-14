@@ -9,12 +9,9 @@
 
 #include "hardware.h"
 #include "interrupts.h"
-#include "keyboard.h"
-#include "mouse.h"
 #include "print.h"
-#include "startup.h"
-
-extern EffectT Effect;
+#include "sunglasses.h"
+#include "memory.h"
 
 int __nocommandline = 1;
 int __initlibraries = 0;
@@ -23,36 +20,9 @@ struct DosLibrary *DOSBase = NULL;
 struct GfxBase *GfxBase = NULL;
 struct Library *MathBase = NULL;
 
-LONG frameCount;
-LONG lastFrameCount;
-
-static __interrupt_handler void IntLevel2Handler() {
-  /* Make sure all scratchpad registers are saved, because we call a function
-   * that relies on the fact that it's caller responsibility to save them. */
-  asm volatile("" ::: "d0", "d1", "a0", "a1");
-
-  if (keyboardActive && (custom->intreqr & INTF_PORTS))
-    KeyboardIntHandler();
-
-  custom->intreq = INTF_PORTS;
-  custom->intreq = INTF_PORTS;
-}
-
-static __interrupt_handler void IntLevel3Handler() {
-  asm volatile("" ::: "d0", "d1", "a0", "a1");
-
-  if (mouseActive && (custom->intreqr & INTF_VERTB))
-    MouseIntHandler();
-
-  if (Effect.InterruptHandler)
-    Effect.InterruptHandler();
-
-  custom->intreq = INTF_LEVEL3;
-  custom->intreq = INTF_LEVEL3;
-}
-
-static void DummyRender() {}
-static BOOL ExitOnLMB() { return !LeftMouseButton(); }
+extern BOOL DemoLoad();
+extern void DemoRun();
+extern void DemoUnLoad();
 
 int main() {
   DOSBase = (struct DosLibrary *)OpenLibrary("dos.library", 33);
@@ -73,110 +43,82 @@ int main() {
           (LONG)AvailMem(MEMF_CHIP | MEMF_LARGEST),
           (LONG)AvailMem(MEMF_FAST | MEMF_LARGEST));
 
-    if (Effect.Load)
-      Effect.Load();
+    if (MemInit()) {
+      if (DemoLoad()) {
+        struct View *OldView;
+        UWORD OldDmacon, OldIntena, OldAdkcon;
 
-    /* Allocate blitter. */
-    WaitBlit();
-    OwnBlitter();
+        /* Allocate blitter. */
+        WaitBlit();
+        OwnBlitter();
 
-    {
-      struct View *OldView;
-      UWORD OldDmacon, OldIntena, OldAdkcon;
+        /* No calls to any other library than exec beyond this point or expect
+         * undefined behaviour including crashes. */
+        Forbid();
 
-      /* No calls to any other library than exec beyond this point or expect
-       * undefined behaviour including crashes. */
-      Forbid();
+        /* Intercept the view of AmigaOS. */
+        OldView = GfxBase->ActiView;
+        LoadView(NULL);
+        WaitTOF();
+        WaitTOF();
 
-      /* Intercept the view of AmigaOS. */
-      OldView = GfxBase->ActiView;
-      LoadView(NULL);
-      WaitTOF();
-      WaitTOF();
+        /* DMA & interrupts take-over. */
+        OldAdkcon = custom->adkconr;
+        OldDmacon = custom->dmaconr;
+        OldIntena = custom->intenar;
 
-      /* DMA & interrupts take-over. */
-      OldAdkcon = custom->adkconr;
-      OldDmacon = custom->dmaconr;
-      OldIntena = custom->intenar;
+        /* Prohibit dma & interrupts. */
+        custom->dmacon = (UWORD)~DMAF_SETCLR;
+        custom->intena = (UWORD)~INTF_SETCLR;
+        WaitVBlank();
 
-      /* Prohibit dma & interrupts. */
-      custom->dmacon = (UWORD)~DMAF_SETCLR;
-      custom->intena = (UWORD)~INTF_SETCLR;
-      WaitVBlank();
+        /* Clear all interrupt requests. Really. */
+        custom->intreq = (UWORD)~INTF_SETCLR;
+        custom->intreq = (UWORD)~INTF_SETCLR;
 
-      /* Clear all interrupt requests. Really. */
-      custom->intreq = (UWORD)~INTF_SETCLR;
-      custom->intreq = (UWORD)~INTF_SETCLR;
+        SaveInterrupts();
 
-      SaveInterrupts();
+        /* Enable master switches. */
+        custom->dmacon = DMAF_SETCLR | DMAF_MASTER;
+        custom->intena = INTF_SETCLR | INTF_INTEN;
 
-      /* Enable master switches. */
-      custom->dmacon = DMAF_SETCLR | DMAF_MASTER;
-      custom->intena = INTF_SETCLR | INTF_INTEN;
+        DemoRun();
 
-      if (!Effect.Render)
-        Effect.Render = DummyRender;
-      if (!Effect.HandleEvent)
-        Effect.HandleEvent = ExitOnLMB;
+        /* firstly... disable dma and interrupts that were used in Main */
+        custom->dmacon = (UWORD)~DMAF_SETCLR;
+        custom->intena = (UWORD)~INTF_SETCLR;
+        WaitVBlank();
 
-      InterruptVector->IntLevel2 = IntLevel2Handler;
-      InterruptVector->IntLevel3 = IntLevel3Handler;
+        /* Clear all interrupt requests. Really. */
+        custom->intreq = (UWORD)~INTF_SETCLR;
+        custom->intreq = (UWORD)~INTF_SETCLR;
 
-      if (Effect.Init)
-        Effect.Init();
+        RestoreInterrupts();
 
-      if (keyboardActive)
-        custom->intena = INTF_SETCLR | INTF_PORTS;
-      if (mouseActive)
-        custom->intena = INTF_SETCLR | INTF_VERTB;
+        /* Restore old copper list... */
+        custom->cop1lc = (ULONG)GfxBase->copinit;
+        WaitVBlank();
 
-      lastFrameCount = ReadFrameCounter();
+        /* Restore AmigaOS state of dma & interrupts. */
+        custom->dmacon = OldDmacon | DMAF_SETCLR;
+        custom->intena = OldIntena | INTF_SETCLR;
+        custom->adkcon = OldAdkcon | ADKF_SETCLR;
 
-      while (Effect.HandleEvent()) {
-        LONG t = ReadFrameCounter();
-        frameCount = t;
-        Effect.Render();
-        lastFrameCount = t;
+        /* ... and original view. */
+        LoadView(OldView);
+        WaitTOF();
+        WaitTOF();
+
+        Permit();
+
+        /* Deallocate blitter. */
+        DisownBlitter();
+
+        DemoUnLoad();
       }
 
-      custom->intena = INTF_VERTB | INTF_PORTS;
-
-      if (Effect.Kill)
-        Effect.Kill();
-
-      /* firstly... disable dma and interrupts that were used in Main */
-      custom->dmacon = (UWORD)~DMAF_SETCLR;
-      custom->intena = (UWORD)~INTF_SETCLR;
-      WaitVBlank();
-
-      /* Clear all interrupt requests. Really. */
-      custom->intreq = (UWORD)~INTF_SETCLR;
-      custom->intreq = (UWORD)~INTF_SETCLR;
-
-      RestoreInterrupts();
-
-      /* Restore old copper list... */
-      custom->cop1lc = (ULONG)GfxBase->copinit;
-      WaitVBlank();
-
-      /* Restore AmigaOS state of dma & interrupts. */
-      custom->dmacon = OldDmacon | DMAF_SETCLR;
-      custom->intena = OldIntena | INTF_SETCLR;
-      custom->adkcon = OldAdkcon | ADKF_SETCLR;
-
-      /* ... and original view. */
-      LoadView(OldView);
-      WaitTOF();
-      WaitTOF();
-
-      Permit();
+      MemKill();
     }
-
-    /* Deallocate blitter. */
-    DisownBlitter();
-
-    if (Effect.UnLoad)
-      Effect.UnLoad();
   }
 
   if (MathBase)

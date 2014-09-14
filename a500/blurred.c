@@ -1,5 +1,5 @@
-#include "startup.h"
-#include "blitter.h"
+#include "sunglasses.h"
+#include "bltop.h"
 #include "coplist.h"
 #include "memory.h"
 #include "ilbm.h"
@@ -12,33 +12,45 @@
 #define DEPTH 5
 #define SIZE 128
 
-static BitmapT *screen[2];
 static UWORD active = 0;
 
-static BitmapT *clip;
-static BitmapT *carry;
+static BitmapT *clip[2];
+static BitmapT *equaliser;
 static BitmapT *buffer;
-static PaletteT *palette[2];
-static CopInsT *bplptr[2][DEPTH];
+static BitmapT *carry;
+static PaletteT *palette[6];
 static CopListT *cp;
+static CopInsT *bplptr[2][DEPTH];
+static CopInsT *pal[2];
+static WORD palVer = -1;
+
+static TrackT *flash;
 
 static void Load() {
-  clip = LoadILBM("data/blurred-b-clip.ilbm");
+  equaliser = LoadILBMCustom("data/equaliser.ilbm", 0);
+  clip[0] = LoadILBMCustom("data/blurred-a-clip.ilbm", 0);
+  clip[1] = LoadILBMCustom("data/blurred-b-clip.ilbm", 0);
 
-  palette[0] = LoadPalette("data/blurred-b-pal-1.ilbm");
-  palette[1] = LoadPalette("data/blurred-b-pal-2.ilbm");
+  palette[0] = LoadPalette("data/blurred-a-pal-1.ilbm");
+  palette[1] = LoadPalette("data/blurred-a-pal-2.ilbm");
+  palette[2] = LoadPalette("data/blurred-b-pal-1.ilbm");
+  palette[3] = LoadPalette("data/blurred-b-pal-2.ilbm");
+  palette[4] = LoadPalette("data/blurred-c-pal-1.ilbm");
+  palette[5] = LoadPalette("data/blurred-c-pal-2.ilbm");
 
-  screen[0] = NewBitmap(WIDTH, HEIGHT, DEPTH);
-  screen[1] = NewBitmap(WIDTH, HEIGHT, DEPTH);
+  flash = TrackLookup(tracks, "flash");
 }
 
 static void UnLoad() {
-  DeletePalette(clip->palette);
-  DeleteBitmap(clip);
-  DeleteBitmap(screen[0]);
-  DeleteBitmap(screen[1]);
+  DeleteBitmap(equaliser);
+  DeleteBitmap(clip[0]);
+  DeleteBitmap(clip[1]);
   DeletePalette(palette[0]);
   DeletePalette(palette[1]);
+  DeletePalette(palette[2]);
+  DeletePalette(palette[3]);
+  DeletePalette(palette[4]);
+  DeletePalette(palette[5]);
 }
 
 static WORD iterCount = 0;
@@ -49,11 +61,11 @@ static void MakeCopperList(CopListT *cp) {
   CopInit(cp);
   CopMakeDispWin(cp, X(0), Y(0), WIDTH, HEIGHT);
   CopMakePlayfield(cp, bplptr[0], screen[active], DEPTH);
-  CopWait(cp, 8, 0);
-  CopLoadPal(cp, palette[0], 0);
+  CopWait(cp, Y(-18), 0);
+  pal[0] = CopLoadColor(cp, 0, 31, 0);
   CopWait(cp, Y(127), 0);
   CopMove16(cp, dmacon, DMAF_RASTER);
-  CopLoadPal(cp, palette[1], 0);
+  pal[1] = CopLoadColor(cp, 0, 31, 0);
   CopWait(cp, Y(128), 0);
   CopMove16(cp, dmacon, DMAF_SETCLR | DMAF_RASTER);
   for (i = 0; i < DEPTH; i++)
@@ -61,33 +73,91 @@ static void MakeCopperList(CopListT *cp) {
   CopEnd(cp);
 }
 
-static void Init() {
+static WORD flash_env[] = {0, 4, 8, 12, 12, 10, 8, 6, 5, 4, 3, 2, 1, 0, 0, 0};
+
+static void InterruptHandler() {
+  if (frameFromStart < 16) {
+    FadeIn(palette[0 + palVer * 2], pal[0]);
+    FadeIn(palette[1 + palVer * 2], pal[1]);
+  } else if (frameTillEnd < 16) {
+    FadeOut(palette[0 + palVer * 2], pal[0]);
+    FadeOut(palette[1 + palVer * 2], pal[1]);
+  } else {
+    WORD s = TrackValueGet(flash, ReadFrameCounter());
+    if (s > 0) {
+      s = 16 - s;
+      FadeWhite(palette[0 + palVer * 2], pal[0], flash_env[s]);
+      FadeWhite(palette[1 + palVer * 2], pal[1], flash_env[s]);
+    }
+  }
+}
+
+static void Init1() {
   WORD i;
 
-  custom->dmacon = DMAF_SETCLR | DMAF_BLITTER;
+  BitmapMakeDisplayable(clip[0]);
+
+  custom->dmacon = DMAF_SETCLR | DMAF_BLITTER | DMAF_BLITHOG;
 
   for (i = 0; i < 2; i++) {
-    ITER(j, 0, 4, BlitterClearSync(screen[i], j));
+    BitmapClear(screen[i], DEPTH);
 
     /* Make the center of blurred shape use colors from range 16-31. */
     WaitBlitter();
     CircleEdge(screen[i], 4, SIZE / 2 + 16, SIZE / 2, SIZE / 4 - 1);
     BlitterFillSync(screen[i], 4);
 
-    ITER(j, 0, 3, BlitterCopySync(screen[i], j, WIDTH / 2, 0, clip, j));
+    BitmapCopy(screen[i], WIDTH / 2, 0, clip[0]);
   }
 
-  buffer = NewBitmap(SIZE, SIZE, 4);
-  carry = NewBitmap(SIZE, SIZE, 2);
-
   cp = NewCopList(200);
+  carry = NewBitmap(SIZE, SIZE, 2);
+  buffer = NewBitmap(SIZE, SIZE, 4);
+
+  palVer = 0;
+
+  MakeCopperList(cp);
+  CopListActivate(cp);
+  custom->dmacon = DMAF_SETCLR | DMAF_RASTER;
+}
+
+static void Init2() {
+  WORD i;
+
+  BitmapMakeDisplayable(clip[1]);
+
+  custom->dmacon = DMAF_SETCLR | DMAF_BLITTER | DMAF_BLITHOG;
+
+  for (i = 0; i < 2; i++) {
+    BlitterSetSync(screen[i], 4, WIDTH / 2, 0, WIDTH / 2, HEIGHT / 2, -1);
+    BitmapCopy(screen[i], WIDTH / 2, 0, clip[1]);
+  }
+
+  palVer = 1;
+
+  MakeCopperList(cp);
+  CopListActivate(cp);
+  custom->dmacon = DMAF_SETCLR | DMAF_RASTER;
+}
+
+static void Init3() {
+  BitmapMakeDisplayable(equaliser);
+
+  custom->dmacon = DMAF_SETCLR | DMAF_BLITTER | DMAF_BLITHOG;
+
+  BitmapClearArea(screen[0], DEPTH, WIDTH / 2, 0, WIDTH / 2, HEIGHT / 2);
+  BitmapClearArea(screen[1], DEPTH, WIDTH / 2, 0, WIDTH / 2, HEIGHT / 2);
+  WaitBlitter();
+
+  palVer = 2;
+
   MakeCopperList(cp);
   CopListActivate(cp);
   custom->dmacon = DMAF_SETCLR | DMAF_RASTER;
 }
 
 static void Kill() {
-  custom->dmacon = DMAF_COPPER | DMAF_RASTER | DMAF_BLITTER;
+  custom->dmacon = DMAF_COPPER | DMAF_RASTER | DMAF_BLITTER | DMAF_BLITHOG;
 
   DeleteCopList(cp);
   DeleteBitmap(carry);
@@ -119,40 +189,31 @@ static void DrawShape() {
   WaitBlitter();
   BlitterLineSetup(carry, 0, LINE_EOR, LINE_ONEDOT);
 
-  RotatingTriangle(iterCount * 16, 0, SIZE);
-  RotatingTriangle(iterCount * 16, SIN_PI * 2 / 3, SIZE);
-  RotatingTriangle(-iterCount * 16, SIN_PI * 2 / 3, SIZE / 2);
+  RotatingTriangle(iterCount * 16, 0, SIZE - 1);
+  RotatingTriangle(iterCount * 16, SIN_PI * 2 / 3, SIZE - 1);
+  RotatingTriangle(-iterCount * 16, SIN_PI * 2 / 3, SIZE / 2 - 1);
 
   BlitterFillSync(carry, 0);
 }
 
-#define BLTOP_NAME DecrementAndSaturate
-#define BLTOP_BORROW_BM carry
-#define BLTOP_DST_BM buffer
-#define BLTOP_HSIZE SIZE
-#define BLTOP_VSIZE SIZE
-#define BLTOP_BPLS 4
-#include "bltop_dec_sat.h"
-
-#define BLTOP_NAME IncrementAndSaturate
-#define BLTOP_CARRY_BM carry
-#define BLTOP_DST_BM buffer
-#define BLTOP_HSIZE SIZE
-#define BLTOP_VSIZE SIZE
-#define BLTOP_BPLS 4
-#include "bltop_inc_sat.h"
-
 static void Render() {
-  //LONG lines = ReadLineCounter();
+  if (iterCount & 1)
+    BitmapDecSaturated(buffer, carry);
 
-  if (iterCount++ & 1)
-    DecrementAndSaturate();
+  iterCount++;
+
   DrawShape();
-  IncrementAndSaturate();
+  BitmapIncSaturated(buffer, carry);
 
-  ITER(i, 0, 3, BlitterCopySync(screen[active], i, 16, 0, buffer, i));
+  BitmapCopy(screen[active], 16, 0, buffer);
+}
 
-  //Log("loop: %ld\n", ReadLineCounter() - lines);
+static void Render1() {
+  // LONG lines = ReadLineCounter();
+
+  Render();
+
+  // Log("blurred: %ld\n", ReadLineCounter() - lines);
 
   WaitVBlank();
   ITER(i, 0, DEPTH - 1, {
@@ -162,4 +223,33 @@ static void Render() {
   active ^= 1;
 }
 
-EffectT Effect = { Load, UnLoad, Init, Kill, Render };
+static void Render2() {
+  WORD i;
+  // LONG lines = ReadLineCounter();
+
+  Render();
+
+  for (i = 0; i < 4; i++) {
+    WORD v = P61_visuctr[i];
+
+    if (v > 25)
+      v = 25;
+    v *= 5;
+
+    BitmapCopy(screen[active], 176 + 32 * i, 0, equaliser);
+    BitmapClearArea(screen[active], DEPTH, 176 + 32 * i, 0, 32, v + 3);
+  }
+
+  // Log("blurred: %ld\n", ReadLineCounter() - lines);
+  WaitBlitter();
+  WaitVBlank();
+  ITER(i, 0, DEPTH - 1, {
+    CopInsSet32(bplptr[0][i], screen[active]->planes[i]);
+    CopInsSet32(bplptr[1][i], screen[active]->planes[i] - WIDTH / 16);
+    });
+  active ^= 1;
+}
+
+EffectT BlurredShapes1 = { Load, NULL, Init1, NULL, Render1, InterruptHandler };
+EffectT BlurredShapes2 = { NULL, NULL, Init2, NULL, Render1, InterruptHandler };
+EffectT BlurredShapes3 = { NULL, UnLoad, Init3, Kill, Render2, InterruptHandler };
