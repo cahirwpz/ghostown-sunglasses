@@ -54,10 +54,10 @@ __regargs void PrepareEffect(EffectT *effect) {
   effect->state |= EFFECT_READY;
 }
 
-__regargs void RunEffects(TimelineItemT *item, WORD n) {
+__regargs void RunEffects(TimelineItemT *item, WORD n, WORD start) {
   BOOL exit = FALSE;
 
-  SetFrameCounter(0);
+  SetFrameCounter(start);
 
   for (; --n >= 0 && !exit; item++) {
     EffectT *effect = item->effect;

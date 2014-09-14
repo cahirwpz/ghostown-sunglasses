@@ -1,173 +1,246 @@
-#include "startup.h"
+#include "sunglasses.h"
 #include "hardware.h"
 #include "coplist.h"
 #include "gfx.h"
 #include "ilbm.h"
-#include "blitter.h"
+#include "bltop.h"
 #include "2d.h"
 #include "fx.h"
+#include "color.h"
 #include "random.h"
 
 #define WIDTH 320
 #define HEIGHT 256
 #define DEPTH 5
-#define PNUM 8
 
-static BitmapT *screen[2];
+#define PNUM 19
+
 static UWORD active = 0;
 static CopInsT *bplptr[5];
 
-static BitmapT *neon[2];
 static BitmapT *background;
-static PaletteT *palette;
+static PaletteT *palette[3], *tempPalette;
 static CopListT *cp;
-static CopInsT *pal;
+static CopInsT *pal[3];
 
-static Point2D p[PNUM];
-static Point2D p_last[2][PNUM];
+static Area2D grt_area[2][PNUM];
+
+typedef struct {
+  WORD color;
+  char *filename;
+  BitmapT *bitmap;
+  Point2D pos;
+} GreetingT;
+
+static GreetingT greeting[PNUM] = {
+  { 0, "data/greet_ada.ilbm" },
+  { 0, "data/greet_blacksun.ilbm" },
+  { 1, "data/greet_dcs.ilbm" },
+  { 0, "data/greet_dekadence.ilbm" },
+  { 1, "data/greet_desire.ilbm" },
+  { 0, "data/greet_dinx.ilbm" },
+  { 1, "data/greet_elude.ilbm" },
+  { 0, "data/greet_fd.ilbm" },
+  { 1, "data/greet_floppy.ilbm" },
+  { 0, "data/greet_lemon.ilbm" },
+  { 1, "data/greet_loonies.ilbm" },
+  { 1, "data/greet_moods.ilbm" },
+  { 0, "data/greet_nah.ilbm" },
+  { 0, "data/greet_rno.ilbm" },
+  { 1, "data/greet_skarla.ilbm" },
+  { 0, "data/greet_speccy.ilbm" },
+  { 0, "data/greet_tulou.ilbm" },
+  { 1, "data/greet_wanted.ilbm" },
+  { 1, "data/greet_ycrew.ilbm" }
+};
+
+static void PositionGreetings() {
+  GreetingT *grt = greeting;
+  WORD y = HEIGHT + 200;
+  WORD i;
+  
+  for (i = 0; i < PNUM; i++) {
+    Point2D *pos = &grt->pos;
+    BitmapT *src = grt->bitmap;
+
+    pos->x = (i & 1) ? (WIDTH / 2 - 64) : (WIDTH / 2 + 64 - src->width);
+    pos->y = y;
+
+    y += src->height / 2 + (random() & 31) + 10;
+
+    grt++;
+  }
+}
 
 static void Load() {
-  neon[0] = LoadILBM("data/greet_ada.ilbm");
-  neon[1] = LoadILBM("data/greet_dcs.ilbm");
-  background = LoadILBM("data/neons.ilbm");
-  screen[0] = NewBitmap(WIDTH, HEIGHT, DEPTH);
-  screen[1] = NewBitmap(WIDTH, HEIGHT, DEPTH);
-  cp = NewCopList(100);
-  palette = NewPalette(32);
+  WORD i;
 
-  {
-    WORD i = 0, j;
+  for (i = 0; i < PNUM; i++)
+    greeting[i].bitmap = LoadILBMCustom(greeting[i].filename, BM_KEEP_PACKED);
 
-    for (j = 0; j < 16; j++, i++)
-      palette->colors[i] = background->palette->colors[i];
-    for (j = 0; j < 8; j++, i++)
-      palette->colors[i] = neon[0]->palette->colors[i];
-    for (j = 0; j < 8; j++, i++)
-      palette->colors[i] = neon[1]->palette->colors[i];
+  background = LoadILBMCustom("data/neons.ilbm", BM_KEEP_PACKED|BM_LOAD_PALETTE);
+  palette[0] = background->palette;
+  palette[1] = LoadPalette("data/greet_moods.ilbm");
+  palette[2] = LoadPalette("data/greet_rno.ilbm");
 
-    DeletePalette(neon[0]->palette);
-    DeletePalette(neon[1]->palette);
-    DeletePalette(background->palette);
-  }
+  PositionGreetings();
 }
 
 static void UnLoad() {
-  DeleteCopList(cp);
-  DeleteBitmap(neon[0]);
-  DeleteBitmap(neon[1]);
+  ITER(i, 0, PNUM - 1, DeleteBitmap(greeting[i].bitmap));
   DeleteBitmap(background);
-  DeletePalette(palette);
-  DeleteBitmap(screen[0]);
-  DeleteBitmap(screen[1]);
+  DeletePalette(palette[0]);
+  DeletePalette(palette[1]);
+  DeletePalette(palette[2]);
+}
+
+static void Prepare() {
+  WORD i;
+
+  BitmapUnpack(background, BM_DISPLAYABLE);
+
+  for (i = 0; i < PNUM; i++)
+    BitmapUnpack(greeting[i].bitmap, 0);
 }
 
 static void RotatePalette() {
-  WORD f = frameCount * 128;
-  WORD i;
+  ColorT *src = palette[0]->colors;
+  UBYTE *dst = (UBYTE *)&tempPalette->colors[1];
+  LONG i = frameCount;
+  WORD n = 15;
 
-  for (i = 1; i < 16; i++) {
-    ColorT c = palette->colors[(i + frameCount) & 15];
-    WORD r = c.r + normfx(SIN(f) * c.r) / 4;
-    WORD g = c.g + normfx(SIN(f) * c.g) / 4;
-    WORD b = c.b + normfx(SIN(f) * c.b) / 4;
-
-    if (r < 0) r = 0;
-    if (r > 255) r = 255;
-    if (g < 0) g = 0;
-    if (g > 255) g = 255;
-    if (b < 0) b = 0;
-    if (b > 255) b = 255;
-
-    CopInsSetRGB24(&pal[i], r, g, b);
+  while (--n >= 0) {
+    UBYTE *c = (UBYTE *)&src[i++ & 15];
+    *dst++ = *c++;
+    *dst++ = *c++;
+    *dst++ = *c++;
   }
 }
 
-static void VBlankInterrupt() {
-  if (custom->intreqr & INTF_VERTB)
-    RotatePalette();
-}
+static void InterruptHandler() {
+  RotatePalette();
 
-static void MakeCopperList(CopListT *cp) {
-  CopInit(cp);
-  CopMakePlayfield(cp, bplptr, screen[active], DEPTH);
-  CopMakeDispWin(cp, X(0), Y(0), WIDTH, HEIGHT);
-  pal = CopLoadPal(cp, palette, 0);
-  CopEnd(cp);
+  if (frameFromStart < 32) {
+    FadeBlack(tempPalette, pal[0], frameFromStart / 2);
+    FadeBlack(palette[1], pal[1], frameFromStart / 2);
+    FadeBlack(palette[2], pal[2], frameFromStart / 2);
+  } else if (frameTillEnd < 32) {
+    FadeBlack(tempPalette, pal[0], frameTillEnd / 2);
+    FadeBlack(palette[1], pal[1], frameTillEnd / 2);
+    FadeBlack(palette[2], pal[2], frameTillEnd / 2);
+  } else {
+    WORD frame1 = (frameFromStart / 2) % 24;
+    WORD frame2 = (frame1 >= 12) ? (frame1 - 12) : (frame1 + 12);
+
+    ContrastChange(tempPalette, pal[0], SIN(frameCount * 128) >> 9);
+    FadeWhite(palette[1], pal[1], envelope[frame1] / 2);
+    FadeWhite(palette[2], pal[2], envelope[frame2] / 2);
+  }
 }
 
 static void Init() {
+  WORD i;
+
   custom->dmacon = DMAF_SETCLR | DMAF_BLITTER;
 
-  ITER(i, 0, PNUM - 1, p[i].x = 0);
-  ITER(i, 0, PNUM - 1, p[i].y = -128);
+  for (i = 0; i < PNUM; i++)
+    BitmapMakeDisplayable(greeting[i].bitmap);
 
-  ITER(i, 0, 3, BlitterCopySync(screen[0], i, 0, 0, background, i));
-  ITER(i, 0, 3, BlitterCopySync(screen[1], i, 0, 0, background, i));
+  BitmapCopy(screen[0], 0, 0, background);
+  BitmapCopy(screen[1], 0, 0, background);
 
   BlitterClearSync(screen[0], 4);
   BlitterClearSync(screen[1], 4);
 
-  MakeCopperList(cp);
+  tempPalette = CopyPalette(palette[0]);
+  cp = NewCopList(100);
+
+  CopInit(cp);
+  CopMakePlayfield(cp, bplptr, screen[active], DEPTH);
+  CopMakeDispWin(cp, X(0), Y(0), WIDTH, HEIGHT);
+  pal[0] = CopLoadColor(cp, 0, 15, 0);
+  pal[1] = CopLoadColor(cp, 16, 23, 0);
+  pal[2] = CopLoadColor(cp, 24, 31, 0);
+  CopEnd(cp);
+
   CopListActivate(cp);
   custom->dmacon = DMAF_SETCLR | DMAF_RASTER;
-  custom->intena = INTF_SETCLR | INTF_VERTB;
 }
 
 static void Kill() {
-  custom->dmacon = DMAF_COPPER | DMAF_RASTER | DMAF_BLITTER;
-  custom->intena = INTF_VERTB;
+  custom->dmacon = DMAF_COPPER | DMAF_BLITTER | DMAF_RASTER;
+
+  DeletePalette(tempPalette);
+  DeleteCopList(cp);
 }
 
-static void ClearCliparts() {
-  WORD i;
+void ClearCliparts() {
+  Area2D *area = grt_area[active];
+  BitmapT *dst = screen[active];
+  WORD n = PNUM;
 
-  for (i = 0; i < PNUM; i++) {
-    BitmapT *src = neon[i & 1];
-    Area2D s = {0, 0, src->width, 8};
-    Point2D d = {p_last[active][i].x, p_last[active][i].y + src->height - 4};
+  while (--n >= 0) {
+    WORD x = area->x;
+    WORD y = area->y;
+    WORD w = area->w;
+    WORD h = area->h;
 
-    if (ClipArea2D(&d, WIDTH, HEIGHT, &s)) {
-      BlitterSetSync(screen[active], 4, d.x, d.y, s.w, s.h, 0x0000);
-      ITER(i, 0, 3, BlitterCopyAreaSync(screen[active], i, d.x, d.y,
-                                        background, i, d.x, d.y, s.w, s.h));
+    if (h > 0) {
+      if (h > 8) { y += h - 8; h = 8; }
+      BlitterSetSync(dst, 4, x, y, w, h, 0);
+      BitmapCopyArea(dst, x, y, background, x, y, w, h);
     }
+
+    area++;
   }
 }
 
 static void DrawCliparts() {
-  WORD step = frameCount - lastFrameCount;
-  WORD i;
+  GreetingT *grt = greeting;
+  Area2D *area = grt_area[active];
+  BitmapT *dst = screen[active];
+  WORD step = (frameCount - lastFrameCount) * 3;
+  WORD n = PNUM;
 
-  for (i = 0; i < PNUM; i++) {
-    BitmapT *src = neon[i & 1];
-    Area2D s = {0, 0, src->width, src->height};
-    Point2D d = {p[i].x, p[i].y};
+  while (--n >= 0) {
+    BitmapT *src = grt->bitmap;
+    WORD dy = grt->pos.y;
+    WORD sy = 0;
+    WORD sh = src->height;
 
-    if (ClipArea2D(&d, WIDTH, HEIGHT, &s)) {
-      ITER(i, 0, 2, BlitterCopyAreaSync(screen[active], i, d.x, d.y,
-                                        src, i, s.x, s.y, s.w, s.h));
-      ITER(i, 3, 4, BlitterSetSync(screen[active], i, d.x, d.y, s.w, s.h, 0xffff));
+    if (dy < 0) { sy -= dy; sh += dy; dy = 0; }
+    if (dy + sh >= HEIGHT) { sh = HEIGHT - dy; }
+
+    if (sh > 0) {
+      area->x = grt->pos.x;
+      area->y = dy;
+      area->w = src->width;
+      area->h = sh;
+
+      BitmapCopyArea(dst, grt->pos.x, dy, src, 0, sy, src->width, sh);
+      BlitterSetSync(dst, 3, grt->pos.x, dy, src->width, sh, grt->color ? 0 : -1);
+      BlitterSetSync(dst, 4, grt->pos.x, dy, src->width, sh, -1);
     } else {
-      if (p[i].y < 0) {
-        p[i].x = 96 + (random() % 112);
-        p[i].y = 256 + (random() & 255);
-      }
+      area->h = 0;
     }
 
-    p_last[active][i].x = p[i].x;
-    p_last[active][i].y = p[i].y;
-
-    p[i].y -= step;
+    grt->pos.y -= step;
+    grt++;
+    area++;
   }
 }
 
 static void Render() {
+  // LONG lines = ReadLineCounter();
+
   ClearCliparts();
   DrawCliparts();
+  
+  // Log("neons: %ld\n", ReadLineCounter() - lines);
 
   WaitVBlank();
   ITER(i, 0, DEPTH - 1, CopInsSet32(bplptr[i], screen[active]->planes[i]));
   active ^= 1;
 }
 
-EffectT Effect = { Load, UnLoad, Init, Kill, Render, VBlankInterrupt };
+EffectT Neons = { Load, UnLoad, Init, Kill, Render, InterruptHandler, Prepare };

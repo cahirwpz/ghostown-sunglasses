@@ -4,76 +4,105 @@
 #include "memory.h"
 #include "print.h"
 
-#define BLOCKSIZE (850 * 1024)
+#define CHIPSIZE (445 * 1024)
+#define FASTSIZE (305 * 1024)
 
-static struct MemHeader mh;
-static struct MemChunk *mc = NULL;
+typedef struct MemHeader MemHeaderT;
+typedef struct MemChunk MemChunkT;
 
-BOOL MemInit() {
-  mc = AllocMem(BLOCKSIZE, MEMF_CHIP);
+static MemHeaderT *chip, *fast;
 
-  if (!mc) {
-    Print("Failed to allocate %ld bytes of chip memory in one chunk!\n",
-          (LONG)BLOCKSIZE);
-    return FALSE;
+__regargs static MemHeaderT *MemPoolAlloc(ULONG byteSize, ULONG attributes) {
+  MemHeaderT *mem = AllocMem(byteSize + sizeof(struct MemHeader), attributes);
+  char *const memName = (attributes & MEMF_CHIP) ? "chip" : "public";
+
+  if (mem) {
+    /* Set up first chunk in the freelist */
+    MemChunkT *mc = (APTR)mem + sizeof(MemHeaderT);
+    mc->mc_Next  = NULL;
+    mc->mc_Bytes = byteSize;
+
+    mem->mh_Node.ln_Type = NT_MEMORY;
+    mem->mh_Node.ln_Name = memName;
+    mem->mh_First = mc;
+    mem->mh_Lower = (APTR)mc;
+    mem->mh_Upper = (APTR)mc + byteSize;
+    mem->mh_Free  = byteSize;
+    return mem;
   }
 
-  mh.mh_Node.ln_Type = NT_MEMORY;
-  mh.mh_Node.ln_Name = "memory for demo";
-  mh.mh_First = mc;
-  mh.mh_Lower = (APTR)mc;
-  mh.mh_Upper = (APTR)mc + BLOCKSIZE;
-  mh.mh_Free  = BLOCKSIZE;
+  Print("Failed to allocate %ld bytes of %s memory in one chunk!\n",
+        byteSize, memName);
+  return mem;
+}
 
-  /* Set up first chunk in the freelist */
-  mc->mc_Next  = NULL;
-  mc->mc_Bytes = BLOCKSIZE;
-
-  return TRUE;
+BOOL MemInit() {
+  if ((chip = MemPoolAlloc(CHIPSIZE, MEMF_CHIP))) {
+    if ((fast = MemPoolAlloc(FASTSIZE, MEMF_PUBLIC)))
+      return TRUE;
+    FreeMem(chip, CHIPSIZE + sizeof(MemHeaderT));
+  }
+  return FALSE;
 }
 
 void MemKill() {
-  FreeMem(mc, BLOCKSIZE);
+  FreeMem(chip, CHIPSIZE + sizeof(MemHeaderT));
+  FreeMem(fast, FASTSIZE + sizeof(MemHeaderT));
 }
 
-static void MemDebug() {
-  struct MemChunk *mc = mh.mh_First;
+__regargs static void MemDebug(MemHeaderT *mem) {
+  MemChunkT *mc = mem->mh_First;
 
-  Log("Free memory map:\n");
+  Log("Free %s memory map:\n", mem->mh_Node.ln_Name);
   while (mc) {
     Log("$%08lx : %ld\n", (LONG)mc, (LONG)mc->mc_Bytes);
     mc = mc->mc_Next;
   }
-  Log("Total free memory: %ld\n", mh.mh_Free);
+  Log("Total free %s memory: %ld\n", mem->mh_Node.ln_Name, mem->mh_Free);
 }
 
-LONG MemAvail() {
-  MemDebug();
-  return mh.mh_Free;
+LONG MemAvail(ULONG attributes asm("d1")) {
+  return (attributes & MEMF_CHIP) ? chip->mh_Free : fast->mh_Free;
 }
 
-static __attribute__((noreturn)) void MemPanic(ULONG byteSize) {
-  Log("Failed to allocate %ld bytes.\n", byteSize);
-  if (byteSize < mh.mh_Free)
-    MemDebug();
+LONG MemUsed(ULONG attributes asm("d1")) {
+  return (attributes & MEMF_CHIP) ? 
+    (CHIPSIZE - chip->mh_Free) : (FASTSIZE - fast->mh_Free);
+}
+
+static __attribute__((noreturn)) 
+  void MemPanic(ULONG byteSize asm("d0"), ULONG attributes asm("d1")) 
+{
+  MemHeaderT *mem = (attributes & MEMF_CHIP) ? chip : fast;
+
+  Log("Failed to allocate %ld bytes of %s memory.\n",
+      byteSize, mem->mh_Node.ln_Name);
+
+  //if (byteSize < mem->mh_Free)
+  MemDebug(mem);
   MemKill();
   exit();
 }
 
 APTR MemAlloc(ULONG byteSize asm("d0"), ULONG attributes asm("d1")) {
-  APTR ptr = Allocate(&mh, byteSize);
+  APTR ptr = Allocate((attributes & MEMF_CHIP) ? chip : fast, byteSize);
 
   if (!ptr)
-    MemPanic(byteSize);
+    MemPanic(byteSize, attributes);
 
-  memset(ptr, 0, byteSize);
+  if (attributes & MEMF_CLEAR)
+    memset(ptr, 0, byteSize);
 
   return ptr;
 }
 
 void MemFree(APTR memoryBlock asm("a1"), ULONG byteSize asm("d0")) {
-  if (memoryBlock)
-    Deallocate(&mh, memoryBlock, byteSize);
+  if (memoryBlock) {
+    if (memoryBlock >= chip->mh_Lower && memoryBlock <= chip->mh_Upper)
+      Deallocate(chip, memoryBlock, byteSize);
+    else if (memoryBlock >= fast->mh_Lower && memoryBlock <= fast->mh_Upper)
+      Deallocate(fast, memoryBlock, byteSize);
+  }
 }
 
 typedef struct {
@@ -82,22 +111,14 @@ typedef struct {
 } MemBlockT;
 
 APTR MemAllocAuto(ULONG byteSize asm("d0"), ULONG attributes asm("d1")) {
-  MemBlockT *mb = NULL;
-
-  if ((mb = Allocate(&mh, byteSize + sizeof(MemBlockT)))) {
-    if (attributes & MEMF_CLEAR)
-      memset(mb, 0, byteSize + sizeof(MemBlockT));
-    mb->size = byteSize;
-  } else {
-    MemPanic(byteSize);
-  }
-
+  MemBlockT *mb = MemAlloc(byteSize + sizeof(MemBlockT), attributes);
+  mb->size = byteSize;
   return mb->data;
 }
 
 void MemFreeAuto(APTR memoryBlock asm("a1")) {
   if (memoryBlock) {
-    MemBlockT *mb = (MemBlockT *)((ULONG *)memoryBlock - 1);
-    Deallocate(&mh, mb, mb->size + sizeof(MemBlockT));
+    MemBlockT *mb = (MemBlockT *)((APTR)memoryBlock - sizeof(MemBlockT));
+    MemFree(mb, mb->size + sizeof(MemBlockT));
   }
 }

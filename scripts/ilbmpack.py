@@ -55,6 +55,9 @@ def main():
     '-m', '--method', type=str, choices=['none', 'lzo', 'deflate'],
     default='lzo', help='Compression method to use.')
   parser.add_argument(
+    '-p', '--palette-only', action='store_true',
+    help='Remove all chunks but CMAP.')
+  parser.add_argument(
     '-f', '--force', action='store_true',
     help='If the output file exists, the tool will overwrite it.')
   parser.add_argument(
@@ -79,7 +82,15 @@ def main():
   ilbm = ILBM()
   ilbm.ChunkBlackList.append('CRNG')
 
-  if ilbm.load(args.input):
+  if args.palette_only:
+    ilbm.ChunkBlackList.extend(['BMHD', 'BODY'])
+
+  if not ilbm.load(args.input):
+    raise RuntimeError("Could not load '%s' file!" % args.input)
+
+  if args.palette_only:
+    ilbm.save(args.output)
+  else:
     bmhd = ilbm.get('BMHD')
     body = ilbm.get('BODY')
 
