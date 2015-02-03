@@ -133,11 +133,11 @@ BOOL DemoLoad() {
 static __interrupt_handler void IntLevel3Handler() {
   asm volatile("" ::: "d0", "d1", "a0", "a1");
 
-  if (custom->intreqr & INTF_VERTB)
-    P61_Music();
-
   if (currentInterruptHandler)
     currentInterruptHandler();
+
+  if (custom->intreqr & INTF_VERTB)
+    P61_Music();
 
   custom->intreq = INTF_LEVEL3;
   custom->intreq = INTF_LEVEL3;
