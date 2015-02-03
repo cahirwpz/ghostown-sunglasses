@@ -132,12 +132,13 @@ static void MakeCopperList(CopListT *cp) {
     CopMove16(cp, dmacon, DMAF_RASTER);
   }
 
+  // use an undocumented trick to make sprites visible while bitplanes are off
   {
     WORD y0 = LANEL_Y + LANE_H + 1;
     WORD y1 = LANER_Y - 2;
 
     while (y0 < y1) {
-      CopWait(cp, Y(y0), 8);
+      CopWait(cp, Y(y0), X(-12));
       CopMove16(cp, bpldat[0], 0);
       y0++;
     }
